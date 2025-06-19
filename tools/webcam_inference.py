@@ -39,6 +39,7 @@ def main():
     parser.add_argument('--checkpoint', required=True, help='model checkpoint')
     parser.add_argument('--sample-duration', type=int, default=32, help='frames per clip')
     parser.add_argument('--device', default='cuda')
+    parser.add_argument('--local_rank', type=int, default=0, help='distributed rank')
     parser.add_argument('--display', action='store_true', help='show webcam')
     args = parser.parse_args()
     args = Config(args)
