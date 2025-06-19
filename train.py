@@ -48,6 +48,7 @@ import pandas as pd
 import matplotlib.pyplot as plt  # For graphics
 import seaborn as sns
 from torchvision.utils import save_image, make_grid
+from torchvision import transforms
 from PIL import Image
 
 from einops import rearrange, repeat
@@ -76,6 +77,8 @@ def get_args_parser():
     parser.add_argument('--save_grid_image', action='store_true', help='Save samples?')
     parser.add_argument('--save_output', action='store_true', help='Save logits?')
     parser.add_argument('--demo_dir', type=str, default='./demo', help='The dir for save all the demo')
+    parser.add_argument('--webcam', action='store_true', help='Run inference on webcam')
+    parser.add_argument('--display', action='store_true', help='Display webcam feed')
     parser.add_argument('--resume', default='', help='resume from checkpoint')
 
     # * Finetuning params
@@ -239,6 +242,60 @@ def reduce_mean(tensor, nprocs):
     dist.all_reduce(rt, op=dist.ReduceOp.SUM)
     rt /= nprocs
     return rt.item()
+
+
+@torch.no_grad()
+def webcam_inference(args):
+    device = torch.device(args.device if torch.cuda.is_available() else 'cpu')
+    model = build_model(args)
+    if args.resume:
+        load_pretrained_checkpoint(model, args.resume)
+    model = model.to(device)
+    model.eval()
+
+    resize = eval(args.resize)
+    crop_size = args.crop_size
+    sample_size = args.sample_size
+
+    left = (resize[0] - crop_size) // 2
+    top = (resize[1] - crop_size) // 2
+
+    transform = transforms.Compose([
+        Normaliztion(),
+        transforms.ToTensor()
+    ])
+
+    cap = cv2.VideoCapture(0)
+    frames = []
+    try:
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            img = Image.fromarray(frame)
+            img = img.resize(resize)
+            img = img.crop((left, top, left + crop_size, top + crop_size))
+            img = img.resize((sample_size, sample_size))
+            img = transform(np.array(img))
+            frames.append(img.view(3, sample_size, sample_size, 1))
+
+            if len(frames) == args.sample_duration:
+                clip = torch.cat(frames, dim=3).permute(0, 3, 1, 2).unsqueeze(0)
+                clip = clip.to(device)
+                (logits, _, _, _), _ = model(clip)
+                pred = logits.argmax(dim=1).item()
+                print('Prediction:', pred)
+                frames = []
+
+            if args.display:
+                cv2.imshow('Webcam', cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
+    finally:
+        cap.release()
+        if args.display:
+            cv2.destroyAllWindows()
 
 def main(args):
     utils.init_distributed_mode(args)
@@ -735,4 +792,7 @@ if __name__ == '__main__':
     fh.setFormatter(logging.Formatter(log_format))
     logging.getLogger().addHandler(fh)
 
-    main(args)
+    if args.webcam:
+        webcam_inference(args)
+    else:
+        main(args)
